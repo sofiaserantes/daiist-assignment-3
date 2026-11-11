@@ -6,12 +6,20 @@ Pipeline per document (each step is a function so server.py can import it):
     extract_pages(path)        PDF -> list of raw page texts
     clean_page(text)           drop Official Journal headers/footers and footnotes
     parse_units(source, pages) split into articles and annexes, with chapter/section/pages
-    chunk_file(path)           all of the above + scope filter + chunking -> list of chunks
+    chunk_file(path, design)   all of the above + scope filter + chunking -> list of chunks
+    embed_and_store(chunks)    embed chunks without a saved vector, store them in ChromaDB
 
-Every chunk carries: source, doc_title, url, kind (article/annex), number, title,
-chapter, section, location (e.g. "Article 26(1)-(4)"), pages (e.g. "70-71").
+Two chunking designs, each in its own ChromaDB collection:
+    "articles"  one chunk per article, long ones split at paragraphs (<= 300 words),
+                with a header line (law > chapter > section, article title)
+    "windows"   fixed windows of 200 words, 40 overlapping, no header (baseline)
 
-Embedding and storage come in the next step.
+Every chunk carries: source, doc_title, url, kind, number, title, chapter,
+section, location (e.g. "Article 26(1)-(4)"), pages (e.g. "70-71").
+
+Vectors are cached in index/vectors.jsonl (one line per chunk text, appended
+after every batch), so a crash or the daily limit loses nothing and a rebuild
+only embeds new or changed chunks.
 """
 
 from __future__ import annotations
@@ -310,29 +318,232 @@ def chunk_unit(u: Unit, offsets: list[int], max_words: int = MAX_WORDS) -> list[
     return chunks
 
 
-def chunk_file(path: Path, max_words: int = MAX_WORDS) -> list[Chunk]:
+def _scoped_units(path: Path):
+    path = Path(path)
+    units, _, offsets = parse_units(path.stem, extract_pages(path))
+    return [u for u in units if in_scope(u) and u.text], offsets
+
+
+def chunk_articles(path: Path, max_words: int = MAX_WORDS) -> list[Chunk]:
+    """Design "articles": structure-based chunks."""
+    units, offsets = _scoped_units(path)
+    return [c for u in units for c in chunk_unit(u, offsets, max_words)]
+
+
+WINDOW_WORDS, WINDOW_OVERLAP = 200, 40
+
+
+def chunk_windows(path: Path, size: int = WINDOW_WORDS, overlap: int = WINDOW_OVERLAP) -> list[Chunk]:
+    """Design "windows": fixed-size word windows over the same scoped text,
+    ignoring article boundaries. Metadata records which articles a window spans."""
+    units, offsets = _scoped_units(path)
+    source = Path(path).stem
+    cfg = DOCS.get(source, {"title": source, "url": ""})
+    words = []  # (word, unit, char offset in full text)
+    for u in units:
+        base = u.start + (len(u.text) and (len(u.text) - len(u.text.lstrip())))
+        for m in re.finditer(r"\S+", u.text):
+            words.append((m.group(), u, base + m.start()))
+    chunks, step = [], size - overlap
+    for i, start in enumerate(range(0, max(len(words) - overlap, 1), step)):
+        win = words[start:start + size]
+        if not win:
+            break
+        spanned = []
+        for _, u, _ in win:
+            label = f"{'Article' if u.kind == 'article' else 'Annex'} {u.number}"
+            if label not in spanned:
+                spanned.append(label)
+        text = " ".join(w for w, _, _ in win)
+        location = spanned[0] if len(spanned) == 1 else f"{spanned[0]} to {spanned[-1]}"
+        first = win[0][1]
+        chunks.append(Chunk(
+            id=f"{source}:win-{i:04d}",
+            text=text,
+            metadata={
+                "source": source, "doc_title": cfg["title"], "url": cfg["url"],
+                "kind": first.kind, "number": first.number, "title": first.title,
+                "chapter": first.chapter, "section": first.section,
+                "location": location, "articles": "; ".join(spanned),
+                "pages": _pages_for(win[0][2], win[-1][2] + 1, offsets),
+                "words": len(win),
+                "hash": hashlib.sha1(text.encode()).hexdigest()[:12],
+            },
+        ))
+    return chunks
+
+
+DESIGNS = {"articles": chunk_articles, "windows": chunk_windows}
+ACTIVE_DESIGN = "articles"   # the design the server and agent use (set after evaluation)
+
+
+def chunk_file(path: Path, design: str = ACTIVE_DESIGN) -> list[Chunk]:
     """Extract, clean, structure, filter to scope and chunk one document.
     The source name is the file stem (data/gdpr.pdf -> "gdpr")."""
-    path = Path(path)
-    source = path.stem
-    units, _, offsets = parse_units(source, extract_pages(path))
-    chunks = []
-    for u in units:
-        if in_scope(u) and u.text:
-            chunks.extend(chunk_unit(u, offsets, max_words))
-    return chunks
+    return DESIGNS[design](Path(path))
 
 
 def corpus_files() -> list[Path]:
     return sorted(p for p in DATA_DIR.iterdir() if p.suffix.lower() in {".pdf", ".txt"})
 
 
+# --------------------------------------------------------------------------
+# 5. Embedding with a persistent cache
+# --------------------------------------------------------------------------
+import json
+import sys
+import time
+
+INDEX_DIR = ROOT / "index"
+VECTORS_FILE = INDEX_DIR / "vectors.jsonl"
+CHROMA_DIR = INDEX_DIR / "chroma"
+EMBED_MODEL = "gemini-embedding-2"
+EMBED_DIM = 768          # smaller than the default; keeps index/ well under 90 MB
+BATCH_SIZE = 50
+
+
+class QuotaExhausted(RuntimeError):
+    pass
+
+
+def log(*args) -> None:
+    print(*args, file=sys.stderr, flush=True)   # never stdout: the MCP server uses it
+
+
+def vector_key(text: str) -> str:
+    return f"{EMBED_MODEL}:{EMBED_DIM}:" + hashlib.sha1(text.encode()).hexdigest()
+
+
+def load_vectors(path: Path = VECTORS_FILE) -> dict[str, list[float]]:
+    cache = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                cache[row["key"]] = row["v"]
+    return cache
+
+
+_client = None
+
+
+def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
+    """One Gemini call for a batch of texts. Retries short rate-limit errors;
+    raises QuotaExhausted when the daily limit is reached."""
+    global _client
+    from google import genai
+    from google.genai import types
+    from api_key import load_api_key
+    if _client is None:
+        _client = genai.Client(api_key=load_api_key())
+    for attempt in range(4):
+        try:
+            # gemini-embedding-2 merges a plain list of strings into ONE embedding;
+            # one Content per text makes it a batch of separate embeddings.
+            resp = _client.models.embed_content(
+                model=EMBED_MODEL,
+                contents=[types.Content(parts=[types.Part.from_text(text=t)]) for t in texts],
+                config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBED_DIM),
+            )
+            vectors = [e.values for e in resp.embeddings]
+            if len(vectors) != len(texts):
+                raise RuntimeError(f"asked for {len(texts)} embeddings, got {len(vectors)}")
+            return vectors
+        except Exception as e:  # noqa: BLE001 - the SDK raises several error types
+            msg = str(e)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                if "PerDay" in msg or "per day" in msg.lower() or attempt == 3:
+                    raise QuotaExhausted(msg[:300]) from e
+                wait = 30 * (attempt + 1)
+                log(f"  rate limited, waiting {wait}s ...")
+                time.sleep(wait)
+                continue
+            raise
+    raise QuotaExhausted("rate limited too many times")
+
+
+def ensure_vectors(chunks: list[Chunk], cache: dict) -> int:
+    """Embed only chunks without a saved vector; append each batch to the cache file."""
+    missing = [c for c in chunks if vector_key(c.text) not in cache]
+    if not missing:
+        return 0
+    INDEX_DIR.mkdir(exist_ok=True)
+    done = 0
+    for i in range(0, len(missing), BATCH_SIZE):
+        batch = missing[i:i + BATCH_SIZE]
+        vectors = embed_texts([c.text for c in batch], "RETRIEVAL_DOCUMENT")
+        with VECTORS_FILE.open("a", encoding="utf-8") as f:
+            for c, v in zip(batch, vectors):
+                key = vector_key(c.text)
+                cache[key] = v
+                f.write(json.dumps({"key": key, "id": c.id, "v": [round(x, 6) for x in v]}) + "\n")
+        done += len(batch)
+        log(f"  embedded {done}/{len(missing)}")
+    return done
+
+
+# --------------------------------------------------------------------------
+# 6. Storage in ChromaDB (one collection per design)
+# --------------------------------------------------------------------------
+def get_collection(design: str = ACTIVE_DESIGN):
+    import chromadb
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return client.get_or_create_collection(f"corpus_{design}", metadata={"hnsw:space": "cosine"})
+
+
+def embed_and_store(chunks: list[Chunk], design: str = ACTIVE_DESIGN, cache: dict | None = None) -> int:
+    """Embed chunks that have no saved vector, then upsert all of them into the
+    design's collection. Returns the number of new embeddings."""
+    cache = load_vectors() if cache is None else cache
+    new = ensure_vectors(chunks, cache)
+    if chunks:
+        get_collection(design).upsert(
+            ids=[c.id for c in chunks],
+            documents=[c.text for c in chunks],
+            metadatas=[c.metadata for c in chunks],
+            embeddings=[cache[vector_key(c.text)] for c in chunks],
+        )
+    return new
+
+
+def remove_source(source: str, design: str = ACTIVE_DESIGN) -> int:
+    col = get_collection(design)
+    ids = col.get(where={"source": source})["ids"]
+    if ids:
+        col.delete(ids=ids)
+    return len(ids)
+
+
+def build() -> None:
+    """main.py index: chunk every corpus file with every design and store it.
+    Embeds only what is not in the cache; stops cleanly at the daily limit."""
+    cache = load_vectors()
+    log(f"{len(cache)} saved vectors in {VECTORS_FILE.relative_to(ROOT)}")
+    for design in DESIGNS:
+        log(f"== design: {design}")
+        for f in corpus_files():
+            chunks = chunk_file(f, design)
+            # Drop chunks of this source that no longer exist (e.g. after a cleaning fix).
+            col = get_collection(design)
+            stale = set(col.get(where={"source": f.stem})["ids"]) - {c.id for c in chunks}
+            if stale:
+                col.delete(ids=list(stale))
+            try:
+                new = embed_and_store(chunks, design, cache)
+            except QuotaExhausted as e:
+                log(f"\nDaily embedding limit reached. Everything embedded so far is saved.\n"
+                    f"Run `uv run python main.py index` again after 09:00 (Spain).\n{e}")
+                sys.exit(1)
+            words = sum(c.metadata["words"] for c in chunks)
+            log(f"  {f.stem:18} {len(chunks):4} chunks, {words:7,} words, {new:4} newly embedded")
+        log(f"  collection corpus_{design}: {get_collection(design).count()} chunks")
+
+
 if __name__ == "__main__":
-    import sys
-    total = 0
-    for f in corpus_files():
-        chunks = chunk_file(f)
-        words = sum(c.metadata["words"] for c in chunks)
-        total += len(chunks)
-        print(f"{f.stem:18} chunks={len(chunks):4} words={words:7,}", file=sys.stderr)
-    print(f"total chunks: {total}", file=sys.stderr)
+    if "--chunks-only" in sys.argv:          # inspect chunking without spending embeddings
+        for design in DESIGNS:
+            for f in corpus_files():
+                ch = chunk_file(f, design)
+                log(f"{design:9} {f.stem:18} chunks={len(ch):4} words={sum(c.metadata['words'] for c in ch):7,}")
+    else:
+        build()
