@@ -253,7 +253,7 @@ def _split_long(block: str, max_words: int) -> list[str]:
 
 def chunk_unit(u: Unit, offsets: list[int], max_words: int = MAX_WORDS) -> list[Chunk]:
     cfg = DOCS.get(u.source, {"short": u.source, "title": u.source, "url": ""})
-    label = f"Article {u.number}" if u.kind == "article" else f"Annex {u.number}"
+    label = {"article": "Article", "annex": "Annex", "page": "Page"}[u.kind] + f" {u.number}"
 
     # Blocks = numbered paragraphs (with their character offset in the unit).
     starts = [m.start() for m in RE_PARA.finditer(u.text)]
@@ -320,8 +320,18 @@ def chunk_unit(u: Unit, offsets: list[int], max_words: int = MAX_WORDS) -> list[
 
 def _scoped_units(path: Path):
     path = Path(path)
-    units, _, offsets = parse_units(path.stem, extract_pages(path))
-    return [u for u in units if in_scope(u) and u.text], offsets
+    pages = extract_pages(path)
+    units, full, offsets = parse_units(path.stem, pages)
+    units = [u for u in units if in_scope(u) and u.text]
+    if not units:
+        # Not structured in articles (e.g. a guidance note): one unit per page.
+        for n, start in enumerate(offsets, 1):
+            end = offsets[n] if n < len(offsets) else len(full)
+            text = full[start:end].strip()
+            if text:
+                units.append(Unit(source=path.stem, kind="page", number=str(n), title=f"Page {n}",
+                                  start=start, end=end, text=text))
+    return units, offsets
 
 
 def chunk_articles(path: Path, max_words: int = MAX_WORDS) -> list[Chunk]:
@@ -351,7 +361,7 @@ def chunk_windows(path: Path, size: int = WINDOW_WORDS, overlap: int = WINDOW_OV
             break
         spanned = []
         for _, u, _ in win:
-            label = f"{'Article' if u.kind == 'article' else 'Annex'} {u.number}"
+            label = {"article": "Article", "annex": "Annex", "page": "Page"}[u.kind] + f" {u.number}"
             if label not in spanned:
                 spanned.append(label)
         text = " ".join(w for w, _, _ in win)
@@ -487,7 +497,8 @@ def ensure_vectors(chunks: list[Chunk], cache: dict) -> int:
 # --------------------------------------------------------------------------
 def get_collection(design: str = ACTIVE_DESIGN):
     import chromadb
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    from chromadb.config import Settings
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False))
     return client.get_or_create_collection(f"corpus_{design}", metadata={"hnsw:space": "cosine"})
 
 
