@@ -1,0 +1,4 @@
+design,questions,hit@1,multi_full@1,multi_partial@1,avg_words@1,hit@3,multi_full@3,multi_partial@3,avg_words@3,hit@5,multi_full@5,multi_partial@5,avg_words@5,top1_dist_answerable,top1_dist_unanswerable
+articles,24,0.542,0,0.571,213,0.708,0.286,1,621,0.792,0.286,1,993,0.232,0.267
+windows,24,0.542,0,0.571,200,0.708,0,0.714,600,0.75,0.143,0.714,1000,0.279,0.297
+articles+bm25,24,0.417,0,0.571,191,0.583,0.143,0.571,584,0.708,0.286,0.714,991,0.242,0.285

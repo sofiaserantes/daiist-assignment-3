@@ -1,7 +1,8 @@
 """
 Assignment 3: evaluation (`main.py evaluate`).
 
-Part 1 - retrieval: hit rate at k = 1, 3, 5 for every design in index.DESIGNS.
+Part 1 - retrieval: hit rate at k = 1, 3, 5 for each configuration in CONFIGS
+    (chunking design + retrieval mode: articles/vector, windows/vector, articles/hybrid).
     A question is a hit at k when ALL its expected passages (source + article/annex)
     appear in the top-k chunks. For `multi` questions we also report a partial hit
     (at least one of the two passages found). Unanswerable questions have no
@@ -28,6 +29,12 @@ ROOT = Path(__file__).resolve().parent
 EVAL_DIR = ROOT / "eval"
 QUESTIONS = EVAL_DIR / "questions.csv"
 KS = (1, 3, 5)
+# (label, chunking design, retrieval mode)
+CONFIGS = [
+    ("articles", "articles", "vector"),
+    ("windows", "windows", "vector"),
+    ("articles+bm25", "articles", "hybrid"),
+]
 
 
 def log(*args) -> None:
@@ -71,12 +78,13 @@ def covers(md: dict, passage: tuple[str, str]) -> bool:
 
 def evaluate_retrieval(questions: list[dict]) -> list[dict]:
     rows = []
-    for design in ix.DESIGNS:
-        log(f"\n== retrieval: design '{design}'")
+    for label, design, mode in CONFIGS:
+        log(f"== retrieval: {label}")
         for q in questions:
-            hits = retrieval.search(q["question"], k=max(KS), design=design)
-            row = {"design": design, "id": q["id"], "kind": q["kind"],
-                   "top1_distance": hits[0]["distance"] if hits else "",
+            hits = retrieval.search(q["question"], k=max(KS), design=design, mode=mode)
+            dists = [h["distance"] for h in hits if h["distance"] is not None]
+            row = {"design": label, "id": q["id"], "kind": q["kind"],
+                   "top1_distance": dists[0] if dists else "",
                    "retrieved": " | ".join(h["citation"] for h in hits)}
             passages = expected_passages(q)
             for k in KS:
@@ -91,7 +99,7 @@ def evaluate_retrieval(questions: list[dict]) -> list[dict]:
 
 def summarise(rows: list[dict]) -> list[dict]:
     summary = []
-    for design in ix.DESIGNS:
+    for design, _, _ in CONFIGS:
         mine = [r for r in rows if r["design"] == design]
         answerable = [r for r in mine if r["kind"] != "unanswerable"]
         multi = [r for r in answerable if r["kind"] == "multi"]
@@ -102,8 +110,11 @@ def summarise(rows: list[dict]) -> list[dict]:
             s[f"multi_full@{k}"] = round(statistics.mean(r[f"hit@{k}"] for r in multi), 3) if multi else ""
             s[f"multi_partial@{k}"] = round(statistics.mean(r[f"partial@{k}"] for r in multi), 3) if multi else ""
             s[f"avg_words@{k}"] = round(statistics.mean(r[f"words@{k}"] for r in mine))
-        s["top1_dist_answerable"] = round(statistics.mean(r["top1_distance"] for r in answerable), 3) if answerable else ""
-        s["top1_dist_unanswerable"] = round(statistics.mean(r["top1_distance"] for r in unans), 3) if unans else ""
+        def mean_dist(rs):
+            d = [r["top1_distance"] for r in rs if r["top1_distance"] != ""]
+            return round(statistics.mean(d), 3) if d else ""
+        s["top1_dist_answerable"] = mean_dist(answerable)
+        s["top1_dist_unanswerable"] = mean_dist(unans)
         summary.append(s)
     return summary
 
@@ -117,10 +128,10 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 
 def print_summary(summary: list[dict]) -> None:
     log("\nRetrieval summary (answerable questions; multi = both passages found)")
-    log(f"{'design':10} {'hit@1':>6} {'hit@3':>6} {'hit@5':>6}   {'multi@5':>7} {'words@5':>8}"
+    log(f"{'design':14} {'hit@1':>6} {'hit@3':>6} {'hit@5':>6}   {'multi@5':>7} {'words@5':>8}"
         f"   top-1 distance: answerable / unanswerable")
     for s in summary:
-        log(f"{s['design']:10} {s['hit@1']:>6} {s['hit@3']:>6} {s['hit@5']:>6}   "
+        log(f"{s['design']:14} {s['hit@1']:>6} {s['hit@3']:>6} {s['hit@5']:>6}   "
             f"{s['multi_full@5']:>7} {s['avg_words@5']:>8}   "
             f"{s['top1_dist_answerable']} / {s['top1_dist_unanswerable']}")
 
