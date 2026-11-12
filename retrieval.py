@@ -108,10 +108,24 @@ def _hit(cid, text, md, distance):
             "distance": round(distance, 4) if distance is not None else None}
 
 
+_sources: dict[str, tuple[int, list[str]]] = {}
+
+
+def matching_sources(source: str, design: str) -> list[str]:
+    """A source filter also matches documents added later about the same law:
+    'ai_act' matches 'ai_act' and 'ai_act_final_provisions'."""
+    col = ix.get_collection(design)
+    count = col.count()
+    if design not in _sources or _sources[design][0] != count:
+        names = sorted({md["source"] for md in col.get(include=["metadatas"])["metadatas"]})
+        _sources[design] = (count, names)
+    return [s for s in _sources[design][1] if s == source or s.startswith(source + "_")] or [source]
+
+
 def vector_search(query: str, n: int, design: str, source: str | None = None) -> list[dict]:
+    where = {"source": {"$in": matching_sources(source, design)}} if source else None
     res = ix.get_collection(design).query(
-        query_embeddings=[embed_query(query)], n_results=n,
-        where={"source": source} if source else None,
+        query_embeddings=[embed_query(query)], n_results=n, where=where,
     )
     return [_hit(cid, t, md, d) for cid, t, md, d in
             zip(res["ids"][0], res["documents"][0], res["metadatas"][0], res["distances"][0])]
@@ -126,7 +140,8 @@ def search(query: str, k: int = 5, design: str = ix.ACTIVE_DESIGN, mode: str = A
 
     vec = vector_search(query, CANDIDATES, design, source)
     bm = get_bm25(design)
-    kw = [i for i in bm.top(query, CANDIDATES * 3) if not source or bm.metas[i]["source"] == source][:CANDIDATES]
+    allowed = set(matching_sources(source, design)) if source else None
+    kw = [i for i in bm.top(query, CANDIDATES * 3) if not allowed or bm.metas[i]["source"] in allowed][:CANDIDATES]
 
     scores, hits = Counter(), {}
     for rank, h in enumerate(vec):
