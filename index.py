@@ -445,7 +445,8 @@ def embed_texts(texts: list[str], task_type: str) -> list[list[float]]:
     from google.genai import types
     from api_key import load_api_key
     if _client is None:
-        _client = genai.Client(api_key=load_api_key())
+        _client = genai.Client(api_key=load_api_key(),
+                               http_options=types.HttpOptions(timeout=60_000))   # ms; never hang
     for attempt in range(4):
         try:
             # gemini-embedding-2 merges a plain list of strings into ONE embedding;
@@ -495,11 +496,26 @@ def ensure_vectors(chunks: list[Chunk], cache: dict) -> int:
 # --------------------------------------------------------------------------
 # 6. Storage in ChromaDB (one collection per design)
 # --------------------------------------------------------------------------
+import threading
+
+_chroma_lock = threading.Lock()
+_chroma_client = None
+
+
 def get_collection(design: str = ACTIVE_DESIGN):
-    import chromadb
-    from chromadb.config import Settings
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False))
-    return client.get_or_create_collection(f"corpus_{design}", metadata={"hnsw:space": "cosine"})
+    """One ChromaDB client per process, created under a lock.
+    Bug found in evaluation: when the agent ran two searches in parallel, each
+    call created its own PersistentClient at the same moment and ChromaDB crashed
+    ("'RustBindingsAPI' object has no attribute 'bindings'"), so search returned
+    nothing and the agent refused. Sharing one client fixes it."""
+    global _chroma_client
+    with _chroma_lock:
+        if _chroma_client is None:
+            import chromadb
+            from chromadb.config import Settings
+            _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR),
+                                                       settings=Settings(anonymized_telemetry=False))
+        return _chroma_client.get_or_create_collection(f"corpus_{design}", metadata={"hnsw:space": "cosine"})
 
 
 def embed_and_store(chunks: list[Chunk], design: str = ACTIVE_DESIGN, cache: dict | None = None) -> int:

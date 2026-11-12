@@ -156,7 +156,7 @@ def print_summary(summary: list[dict]) -> None:
 ANSWERS = EVAL_DIR / "answers.jsonl"
 JUDGEMENTS = EVAL_DIR / "judgements.jsonl"
 HUMAN = EVAL_DIR / "human_labels.csv"
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.1-flash-lite")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.5-flash-lite")
 PAUSE_SECONDS = 4          # between questions, to stay under the free tier's per-minute limit
 
 # Rubric (decisions: correct = main fact right and nothing wrong;
@@ -237,7 +237,7 @@ def run_agent_on_all(questions: list[dict]) -> dict:
                 if "PerDay" in msg or "per day" in msg.lower():
                     log(f"  {q['id']}: daily limit reached ({msg[:200]})")
                     raise DailyLimit(msg) from e
-                if attempt < 2 and any(c in msg for c in ("429", "RESOURCE_EXHAUSTED", "504", "503", "DEADLINE")):
+                if attempt < 2 and any(c in msg for c in ("429", "RESOURCE_EXHAUSTED", "504", "503", "DEADLINE", "TimeoutError")):
                     log(f"  {q['id']}: {msg[:120]} ... waiting 60s")
                     time.sleep(60)
                     continue
@@ -274,6 +274,7 @@ def code_checks(q: dict, a: dict) -> dict:
         "expected_retrieved": int(all(p in retrieved for p in expected)) if expected else "",
         "expected_cited": int(all(p in cited for p in expected)) if expected else "",
         "guardrail_fired": int(bool(a["guardrail_events"])),
+        "search_errors": a["retrieved_text"].count("Search failed"),
         "search_calls": sum(1 for t in a["tool_calls"] if t["tool"] == "search"),
     }
 
@@ -389,6 +390,7 @@ def summarise_e2e(rows: list[dict]) -> dict:
         "citations_valid": mean([r["citations_valid"] for r in rows]),
         "expected_retrieved": mean([r["expected_retrieved"] for r in ans]),
         "guardrail_fired": sum(r["guardrail_fired"] for r in rows),
+        "search_errors": sum(r["search_errors"] for r in rows),
         "avg_input_tokens": round(statistics.mean(r["input_tokens"] for r in rows)),
         "avg_output_tokens": round(statistics.mean(r["output_tokens"] for r in rows)),
         "avg_judge_tokens": round(statistics.mean(r["judge_tokens"] for r in rows)),
