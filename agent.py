@@ -44,7 +44,7 @@ from mcp.client.stdio import stdio_client
 from api_key import load_api_key
 
 ROOT = Path(__file__).resolve().parent
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemini-3.5-flash")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemini-3.5-flash-lite")
 MAX_TOOL_CALLS = 6
 MAX_MODEL_CALLS = 10
 

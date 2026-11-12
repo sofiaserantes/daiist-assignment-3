@@ -156,7 +156,7 @@ def print_summary(summary: list[dict]) -> None:
 ANSWERS = EVAL_DIR / "answers.jsonl"
 JUDGEMENTS = EVAL_DIR / "judgements.jsonl"
 HUMAN = EVAL_DIR / "human_labels.csv"
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.5-flash-lite")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.1-flash-lite")
 PAUSE_SECONDS = 4          # between questions, to stay under the free tier's per-minute limit
 
 # Rubric (decisions: correct = main fact right and nothing wrong;
@@ -207,27 +207,50 @@ def citation_passage(cite: str) -> tuple[str, str] | None:
     return (m.group(1), normalise_location(m.group(2))) if m else None
 
 
+def root_error(e: BaseException) -> str:
+    """The real message behind asyncio/anyio 'unhandled errors in a TaskGroup' wrappers."""
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    if e.__cause__ is not None and not str(e):
+        e = e.__cause__
+    return f"{type(e).__name__}: {e}"
+
+
+class DailyLimit(Exception):
+    pass
+
+
 def run_agent_on_all(questions: list[dict]) -> dict:
     import agent
     cache = load_jsonl(ANSWERS)
     todo = [q for q in questions if q["id"] not in cache or cache[q["id"]]["question"] != q["question"]]
     log(f"\n== end-to-end: agent ({agent.CHAT_MODEL}) on {len(questions)} questions, {len(todo)} to run")
+    failures = 0
     for n, q in enumerate(todo, 1):
+        log(f"  [{n}/{len(todo)}] {q['id']}: {q['question'][:70]} ...")
         for attempt in range(3):
             try:
                 res = agent.answer(q["question"], approve=False)
                 break
             except Exception as e:  # noqa: BLE001
-                msg = str(e)
-                if attempt < 2 and ("429" in msg or "RESOURCE_EXHAUSTED" in msg or "504" in msg or "503" in msg):
-                    log(f"  {q['id']}: {msg[:80]} ... waiting 60s")
+                msg = root_error(e)
+                if "PerDay" in msg or "per day" in msg.lower():
+                    log(f"  {q['id']}: daily limit reached ({msg[:200]})")
+                    raise DailyLimit(msg) from e
+                if attempt < 2 and any(c in msg for c in ("429", "RESOURCE_EXHAUSTED", "504", "503", "DEADLINE")):
+                    log(f"  {q['id']}: {msg[:120]} ... waiting 60s")
                     time.sleep(60)
                     continue
-                log(f"  {q['id']}: FAILED ({msg[:150]})")
+                log(f"  {q['id']}: FAILED ({msg[:300]})")
                 res = None
                 break
         if res is None:
+            failures += 1
+            if failures >= 3:
+                log("  3 failures in a row: stopping. Answers so far are saved; run again later to continue.")
+                break
             continue
+        failures = 0
         res["id"] = q["id"]
         res["model"] = agent.CHAT_MODEL
         append_jsonl(ANSWERS, res)
@@ -412,7 +435,12 @@ def main() -> None:
     print_summary(summary)
 
     # Part 2: end-to-end
-    answers = run_agent_on_all(questions)
+    try:
+        answers = run_agent_on_all(questions)
+    except DailyLimit:
+        log("\nThe model's daily free limit is reached. Answers so far are saved in eval/answers.jsonl;"
+            "\nrun the same command again after the limit resets (09:00 in Spain) to continue.")
+        answers = load_jsonl(ANSWERS)
     write_grading_sheet(questions, answers)
     if "--skip-judge" in sys.argv:
         log("\nSkipped the judge. Grade eval/grading_sheet.csv into eval/human_labels.csv, then run without --skip-judge.")
