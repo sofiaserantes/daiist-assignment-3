@@ -1,0 +1,31 @@
+id,kind,refused,has_citation,citations_valid,expected_retrieved,expected_cited,guardrail_fired,search_errors,search_calls,correct,supported,judge_reason,suggested_cause,input_tokens,output_tokens,judge_tokens,seconds
+q01,single,0,1,1,1,1,0,0,1,1,1,"The answer correctly identifies the user as the deployer and the vendor as the provider based on the provided definitions, and correctly notes the exceptions where a deployer might become a provider.",,3408,217,2803,42.3
+q02,single,0,1,1,1,1,0,0,1,1,1,"The answer correctly identifies the obligation for AI literacy and the specific training requirements for human oversight of high-risk AI systems, both supported by the provided text.",,3041,156,2361,9.3
+q03,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies the prohibition under the AI Act and the specific exceptions provided in the retrieved passages.,,3598,174,2885,21.1
+q04,multi,0,1,1,1,1,0,0,1,1,0,"The assistant correctly identifies the high-risk classification but makes an unsupported claim that performance tracking 'typically involves profiling', which is not stated in the provided text.",unsupported claim,3612,231,3124,37.2
+q05,single,0,1,1,1,1,0,0,1,1,1,The answer accurately reflects the criteria for the high-risk classification and the exceptions provided in the retrieved passages.,,3535,256,3161,3.1
+q06,single,0,1,1,1,1,0,0,1,1,1,The answer accurately reflects the requirements for human oversight as defined in the retrieved passages.,,3175,276,2899,24.5
+q07,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies the six-month retention period and cites the relevant articles from the retrieved passages.,,3227,188,2625,19.7
+q08,single,0,1,1,1,1,0,0,2,1,1,"The answer correctly identifies the obligation to inform users about AI interaction and the timing requirements, citing the relevant articles from the retrieved passages.",,7468,171,4352,17.1
+q09,unanswerable,1,0,1,,,0,0,1,1,1,refusal (decided in code),,3438,39,0,3.2
+q10,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies the change in legal status and the associated obligations based on the provided text.,,3362,185,2743,15.2
+q11,single,0,1,1,1,1,0,0,1,1,1,The answer accurately reflects the requirements of GDPR Article 12(3) regarding the timeline for responding to data subject access requests.,,3394,120,2740,3.1
+q12,single,0,1,1,1,1,0,0,1,1,1,"The answer correctly identifies that the first copy is free and explains the conditions under which fees may be charged, all of which are supported by the retrieved passages.",,3027,192,2425,10.4
+q13,single,0,1,1,1,1,0,0,1,1,0,"The answer is correct, but it includes an unsupported example ('discrimination or employment claims') that is not present in the retrieved passages.",unsupported claim,3265,152,2693,4.3
+q14,single,0,1,1,1,1,0,0,1,1,0,"The assistant correctly identifies the legal rule, but it makes an unsupported factual claim that HR processing is inherently continuous and involves special categories of data, which is not stated in the provided passages.",unsupported claim,3179,182,2634,4.3
+q15,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies the prohibition and supports it with the provided text.,,2910,103,2104,8.4
+q16,single,0,1,1,1,1,0,0,2,1,1,"The answer correctly identifies the two-month deadline and the right to request pay information, with all claims supported by the retrieved passages.",,6775,206,3943,12.4
+q17,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies that such clauses are prohibited and provides accurate support from the retrieved passages.,,2912,115,2245,5.0
+q18,single,0,1,1,1,1,0,0,1,1,1,The answer correctly identifies the reporting deadline and frequency for an employer with 200 employees based on the provided text.,,3092,207,2515,3.4
+q19,single,0,1,1,1,1,0,0,1,1,1,The answer accurately reflects the conditions for a joint pay assessment as stated in Article 10(1) of the retrieved passages.,,3200,177,2734,4.4
+q20,multi,0,1,1,1,1,0,0,2,0,0,"The assistant incorrectly states the practice is 'not allowed' as an absolute, whereas the law provides specific exceptions and conditions under which such systems can operate. Additionally, the claim that the practice is prohibited is not supported by the retrieved passages.",wrong answer from right passage,5614,257,5092,6.4
+q21,multi,0,1,1,1,1,0,0,2,1,1,The answer correctly identifies the mandatory obligations and all claims are supported by the provided passages.,,8406,398,5200,6.0
+q22,multi,0,1,1,0,0,0,0,2,1,0,"The assistant correctly concludes that the data cannot be reused, but it makes an unsupported claim that an attrition model 'typically falls' under high-risk AI systems, which is an inference not explicitly stated in the provided text.",unsupported claim,4899,258,4381,5.2
+q23,multi,0,1,1,0,0,0,0,3,1,1,The answer correctly identifies the obligation to inform candidates and cites the relevant article from the retrieved passages.,,14440,184,6429,5.6
+q24,multi,0,1,1,1,1,0,0,2,1,0,The assistant included external knowledge about what specific GDPR articles cover (candidate rights/examples) which is not present in the retrieved passages.,unsupported claim,8154,302,4899,7.6
+q25,multi,0,1,1,0,0,0,0,1,1,1,"The answer correctly identifies the default prohibition and the existence of exceptions under GDPR, though it misses the specific AI Act provision mentioned in the reference.",,3221,153,2579,4.0
+q26,unanswerable,1,0,1,,,0,0,1,1,1,refusal (decided in code),,2616,30,0,2.6
+q27,unanswerable,1,0,1,,,0,0,1,1,1,refusal (decided in code),,2614,35,0,3.4
+q28,unanswerable,1,0,1,,,0,0,2,1,1,refusal (decided in code),,7404,79,0,5.0
+q29,unanswerable,1,0,1,,,0,0,1,1,1,refusal (decided in code),,3461,31,0,3.2
+q30,unanswerable,1,0,1,,,0,0,1,1,1,refusal (decided in code),,3150,28,0,4.1

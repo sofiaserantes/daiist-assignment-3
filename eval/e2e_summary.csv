@@ -1,0 +1,2 @@
+questions,correct,correct_answerable,supported_when_answered,correct_refusals,wrong_refusals,citations_valid,expected_retrieved,guardrail_fired,search_errors,avg_input_tokens,avg_output_tokens,avg_judge_tokens,avg_seconds
+30,0.967,0.958,0.75,6/6,0/24,1,0.875,0,0,4453,170,2652,10.1

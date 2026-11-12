@@ -156,7 +156,7 @@ def print_summary(summary: list[dict]) -> None:
 ANSWERS = EVAL_DIR / "answers.jsonl"
 JUDGEMENTS = EVAL_DIR / "judgements.jsonl"
 HUMAN = EVAL_DIR / "human_labels.csv"
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.5-flash-lite")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gemini-3.1-flash-lite")   # not the agent's model
 PAUSE_SECONDS = 4          # between questions, to stay under the free tier's per-minute limit
 
 # Rubric (decisions: correct = main fact right and nothing wrong;
@@ -181,9 +181,20 @@ supported (1 or 0):
   0 if at least one claim is not in the RETRIEVED passages, even if it is true
     (e.g. a date or rule the assistant knows from elsewhere).
   A correct claim from outside the passages makes supported 0 but does NOT change correct.
+  Applying a retrieved rule to the user's own situation is not a new claim. A general
+  statement about how things usually are (e.g. "HR typically processes special data")
+  that is not in the passages IS a claim and makes supported 0.
 
 Give a short reason (one or two sentences) naming the missing fact or unsupported claim.
-Reply only with JSON: {"correct": 0 or 1, "supported": 0 or 1, "reason": "..."}"""
+Work in this order before deciding:
+  1. Write the main fact of the REFERENCE in a few words.
+  2. List every factual claim in the ANSWER, and for each one say whether it is in the
+     RETRIEVED passages (quote a few words of the passage) or not.
+  3. Say whether the ANSWER's first sentence / overall conclusion agrees with the REFERENCE.
+Be strict: when in doubt about a claim, it is NOT supported.
+Reply only with JSON:
+{"main_fact": "...", "claims": [{"claim": "...", "in_retrieved": true/false, "evidence": "..."}],
+ "conclusion_matches_reference": true/false, "correct": 0 or 1, "supported": 0 or 1, "reason": "..."}"""
 
 
 def load_jsonl(path: Path) -> dict:
@@ -305,7 +316,8 @@ def judge(q: dict, a: dict, client) -> dict:
             v = json.loads(resp.text)
             usage = resp.usage_metadata
             return {"correct": int(v["correct"]), "supported": int(v["supported"]),
-                    "reason": str(v.get("reason", "")), "judge_model": JUDGE_MODEL,
+                    "reason": str(v.get("reason", "")), "claims": v.get("claims", []),
+                    "judge_model": JUDGE_MODEL,
                     "judge_tokens": (usage.prompt_token_count or 0) + (usage.candidates_token_count or 0)}
         except Exception as e:  # noqa: BLE001
             if attempt < 2:
@@ -325,7 +337,9 @@ def grade_all(questions: list[dict], answers: dict) -> dict:
         a = answers.get(q["id"])
         if not a:
             continue
-        key_ok = q["id"] in cache and cache[q["id"]].get("answer") == a["answer"]
+        key_ok = (q["id"] in cache and cache[q["id"]].get("answer") == a["answer"]
+                  and cache[q["id"]].get("judge_model") in (JUDGE_MODEL, "code")
+                  and cache[q["id"]].get("correct") != "")          # retry failed verdicts
         if key_ok:
             continue
         if a["refused"]:
@@ -401,7 +415,7 @@ def summarise_e2e(rows: list[dict]) -> dict:
 def agreement(rows: list[dict]) -> None:
     if not HUMAN.exists():
         return
-    with HUMAN.open(newline="", encoding="utf-8") as f:
+    with HUMAN.open(newline="", encoding="utf-8-sig") as f:   # -sig: Excel adds a BOM
         human = {r["id"].strip(): r for r in csv.DictReader(f) if (r.get("id") or "").strip()}
     judged = {r["id"]: r for r in rows}
     pairs = [(human[i], judged[i]) for i in human if i in judged and human[i].get("correct", "").strip() != ""]
